@@ -12,27 +12,28 @@ case class Node(ID: Int, X: Double, Y: Double, classified: Int)
 
 class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) extends Serializable {
   @transient val sc = spc
+  val Noise = -2
+  val Unclassified = -1
+  val sqlContext = new SQLContext(sc)
+  import sqlContext.implicits._
   def run(): DataFrame = {
-    val sqlContext = new SQLContext(sc)
-    import sqlContext.implicits._
-    val noise = -2
-    val unclassified = -1
-    val marked = coll.withColumn("classified", lit(unclassified))
+    val marked = coll.withColumn("classified", lit(Unclassified))
     val curNode = marked.where("classified < 0").limit(1).as[Node].first()
-    def markNeighbours(points: DataFrame, node: Node): DataFrame = {
-      val dist = udf((x: Double, y: Double, x0: Double, y0: Double) => (sqrt(pow(x - x0, 2) + pow(y - y0, 2))))
-      val withDist = marked.withColumn("dist", dist($"X", $"Y", lit(curNode.X), lit(curNode.Y)))
-      val setCluster = udf((old_class: Int, dist: Double, clusterID: Int ) => if (dist < eps) clusterID else old_class )
-      val setNoise = udf((old_class: Int, dist: Double) => if (dist < eps) noise else old_class )
-      val isNoise = withDist.where($"dist" < eps).count < minPoints
-      withDist.withColumnRenamed("classified", "old_class").
-        withColumn("classified", if (isNoise) setNoise($"old_class", $"dist")
-        else setCluster($"old_class", $"dist", lit(curNode.ID))).
-        select("ID", "X", "Y", "classified")
-    }
     val newColl = markNeighbours(marked, curNode)
     val seeds = newColl.filter($"ID" !== curNode.ID).filter($"classified" === curNode.ID)
     seeds
+  }
+
+  def markNeighbours(points: DataFrame, node: Node): DataFrame = {
+    val dist = udf((x: Double, y: Double, x0: Double, y0: Double) => (sqrt(pow(x - x0, 2) + pow(y - y0, 2))))
+    val withDist = points.withColumn("dist", dist($"X", $"Y", lit(node.X), lit(node.Y)))
+    val setCluster = udf((old_class: Int, dist: Double, clusterID: Int ) => if (dist < eps) clusterID else old_class )
+    val setNoise = udf((old_class: Int, dist: Double) => if (dist < eps) Noise else old_class )
+    val isNoise = withDist.where($"dist" < eps).count < minPoints
+    withDist.withColumnRenamed("classified", "old_class").
+      withColumn("classified", if (isNoise) setNoise($"old_class", $"dist")
+      else setCluster($"old_class", $"dist", lit(node.ID))).
+      select("ID", "X", "Y", "classified")
   }
 }
 
