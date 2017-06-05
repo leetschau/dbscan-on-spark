@@ -10,8 +10,10 @@ import scala.math.{pow, sqrt}
 
 case class Node(ID: Int, X: Double, Y: Double, classified: Int)
 
-class DBScan(coll: DataFrame, eps: Double, minPoints: Int) extends Serializable {
-  def run(sqlContext: SQLContext): DataFrame = {
+class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) extends Serializable {
+  @transient val sc = spc
+  def run(): DataFrame = {
+    val sqlContext = new SQLContext(sc)
     import sqlContext.implicits._
     val noise = -2
     val unclassified = -1
@@ -42,8 +44,8 @@ object DBScan {
     val testData = Seq((0, 1.0, 1.1), (1, 1.2, 0.8), (2, 0.8, 1.0), (3, 3.7, 4.0), (4, 3.9, 3.9),
       (5, 3.6, 4.1), (6, 10.0, 10.0), (7, 1.1, 0.9), (8, 10.1, 9.9))
     val inp = sqlContext.createDataFrame(testData).toDF("ID", "X", "Y")
-    val dbscan = new DBScan(inp, 0.5, 2)
-    val res = dbscan.run(sqlContext)
+    val dbscan = new DBScan(sc, inp, 0.5, 2)
+    val res = dbscan.run()
     res.show()
 
   }
