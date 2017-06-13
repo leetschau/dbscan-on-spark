@@ -12,28 +12,83 @@ case class Node(ID: Int, X: Double, Y: Double, classified: Int)
 
 class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) extends Serializable {
   @transient val sc = spc
-  val Noise = -2
-  val Unclassified = -1
+  val Noise = -1
+  val Unclassified = -10
   val sqlContext = new SQLContext(sc)
   import sqlContext.implicits._
   def run(): DataFrame = {
-    val marked = coll.withColumn("classified", lit(Unclassified))
-    val curNode = marked.where("classified < 0").limit(1).as[Node].first()
-    val newColl = markNeighbours(marked, curNode)
-    val seeds = newColl.filter($"ID" !== curNode.ID).filter($"classified" === curNode.ID)
-    seeds
+    val marked = coll.withColumn("classified", lit(Unclassified)).withColumn("seed", lit(0))
+    markCluster(marked)
+  }
+  def markCluster(points: DataFrame): DataFrame = {
+    println(
+      """
+        |======================== new cluster ====================
+      """.stripMargin)
+    val untested = points.filter($"classified" < Noise).limit(1)
+    if (untested.count() < 1) {
+      points
+    } else {
+      val curNode = untested.as[Node].first()
+      val markCurrent = udf((id: Int, seed: Int) => if (id == curNode.ID) 1 else seed)
+      val markCurNode = points.withColumn("seed", markCurrent($"ID", $"seed"))
+      val newCluster = extendNeighbours(markCurNode)
+      markCluster(newCluster)
+    }
   }
 
   def markNeighbours(points: DataFrame, node: Node): DataFrame = {
+    println("--------- into markNeighbours ---------")
     val dist = udf((x: Double, y: Double, x0: Double, y0: Double) => (sqrt(pow(x - x0, 2) + pow(y - y0, 2))))
     val withDist = points.withColumn("dist", dist($"X", $"Y", lit(node.X), lit(node.Y)))
-    val setCluster = udf((old_class: Int, dist: Double, clusterID: Int ) => if (dist < eps) clusterID else old_class )
-    val setNoise = udf((old_class: Int, dist: Double) => if (dist < eps) Noise else old_class )
-    val isNoise = withDist.where($"dist" < eps).count < minPoints
-    withDist.withColumnRenamed("classified", "old_class").
-      withColumn("classified", if (isNoise) setNoise($"old_class", $"dist")
-      else setCluster($"old_class", $"dist", lit(node.ID))).
-      select("ID", "X", "Y", "classified")
+    println("nodeID: " + node.ID)
+    println("node.classified: " + node.classified)
+    println("----------------- withDist: ----------------")
+    withDist.show()
+    println("----------------- withDist over ----------------")
+
+    val setCluster = udf((classified: Int, dist: Double) =>
+    {
+      if (dist < eps && node.classified >= 0) node.classified
+      else if (dist < eps && node.classified < 0) node.ID
+      else classified
+    }
+    )
+    val setNoise = udf((classified: Int, dist: Double) => if (dist < eps) Noise else classified )
+    val isNoise = withDist.filter($"dist" < eps).filter($"dist" >= 0).count < minPoints
+    val setSeed = udf((id: Int, dist: Double, seed: Int, classified: Int) =>
+      if (classified < 0 && dist < eps && id != node.ID) 1
+      else if (id == node.ID) 0
+      else seed
+    )
+    val markSeed = if (isNoise) withDist else withDist.withColumn("seed", setSeed($"ID", $"dist", $"seed", $"classified"))
+    val new_classified = markSeed.withColumn("classified",
+      if (isNoise) setNoise($"classified", $"dist") else setCluster($"classified", $"dist"))
+    println("----------------- new_classified: ----------------")
+    new_classified.show()
+    println("----------------- new_classified over ----------------")
+    new_classified
+  }
+
+  def extendNeighbours(points: DataFrame): DataFrame = {
+    println("--------- extendNeighbours -----------")
+    println("------------ points ----------------")
+    points.show()
+    println("------------ points over ----------------")
+//    val seed = points.where($"seed" > 0).limit(1)
+    val dataLen = points.filter($"seed" > 0).collect().length
+    println("dataLen: " + dataLen)
+    if (dataLen == 0) {
+//    if (points.filter($"seed" > 0).rdd.isEmpty()) {          // TODO why always hang?
+      points
+    } else {
+      val firstSeed = points.filter($"seed" > 0).limit(1).as[Node].first()
+      val firstMarked = markNeighbours(points, firstSeed)
+      println("------------ firstMarked ----------------")
+      firstMarked.show()
+      println("------------ firstMarked over ----------------")
+      extendNeighbours(firstMarked)
+    }
   }
 }
 
@@ -42,12 +97,12 @@ object DBScan {
     val conf = new SparkConf().setAppName("DBSCAN").setMaster("local[2]")
     val sc = new SparkContext(conf)
     val sqlContext = new SQLContext(sc)
-    val testData = Seq((0, 1.0, 1.1), (1, 1.2, 0.8), (2, 0.8, 1.0), (3, 3.7, 4.0), (4, 3.9, 3.9),
-      (5, 3.6, 4.1), (6, 10.0, 10.0), (7, 1.1, 0.9), (8, 10.1, 9.9))
+    val testData = Seq((0, 1.0, 1.1), (1, 2.0, 1.0), (2, 0.9, 1.0), (3, 3.7, 4.0), (4, 3.9, 3.9),
+      (5, 3.6, 4.1), (6, 10.0, 10.0), (7, 2.9, 1.0), (8, 10.1, 9.9), (9, 3.9, 1.0))
     val inp = sqlContext.createDataFrame(testData).toDF("ID", "X", "Y")
-    val dbscan = new DBScan(sc, inp, 0.5, 2)
+    val dbscan = new DBScan(sc, inp, 1.5, 2)
     val res = dbscan.run()
+    println("Final result:")
     res.show()
-
   }
 }
