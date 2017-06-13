@@ -6,6 +6,8 @@ package com.dhcc.dbscan
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import org.apache.spark.sql.functions.{lit, udf}
+
+import scala.annotation.tailrec
 import scala.math.{pow, sqrt}
 
 case class Node(ID: Int, X: Double, Y: Double, classified: Int)
@@ -20,11 +22,9 @@ class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) ex
     val marked = coll.withColumn("classified", lit(Unclassified)).withColumn("seed", lit(0))
     markCluster(marked)
   }
-  def markCluster(points: DataFrame): DataFrame = {
-    println(
-      """
-        |======================== new cluster ====================
-      """.stripMargin)
+
+  @tailrec
+  private def markCluster(points: DataFrame): DataFrame = {
     val untested = points.filter($"classified" < Noise).limit(1)
     if (untested.count() < 1) {
       points
@@ -38,14 +38,8 @@ class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) ex
   }
 
   def markNeighbours(points: DataFrame, node: Node): DataFrame = {
-    println("--------- into markNeighbours ---------")
     val dist = udf((x: Double, y: Double, x0: Double, y0: Double) => (sqrt(pow(x - x0, 2) + pow(y - y0, 2))))
     val withDist = points.withColumn("dist", dist($"X", $"Y", lit(node.X), lit(node.Y)))
-    println("nodeID: " + node.ID)
-    println("node.classified: " + node.classified)
-    println("----------------- withDist: ----------------")
-    withDist.show()
-    println("----------------- withDist over ----------------")
 
     val setCluster = udf((classified: Int, dist: Double) =>
     {
@@ -64,29 +58,18 @@ class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) ex
     val markSeed = if (isNoise) withDist else withDist.withColumn("seed", setSeed($"ID", $"dist", $"seed", $"classified"))
     val new_classified = markSeed.withColumn("classified",
       if (isNoise) setNoise($"classified", $"dist") else setCluster($"classified", $"dist"))
-    println("----------------- new_classified: ----------------")
-    new_classified.show()
-    println("----------------- new_classified over ----------------")
     new_classified
   }
 
-  def extendNeighbours(points: DataFrame): DataFrame = {
-    println("--------- extendNeighbours -----------")
-    println("------------ points ----------------")
-    points.show()
-    println("------------ points over ----------------")
-//    val seed = points.where($"seed" > 0).limit(1)
-    val dataLen = points.filter($"seed" > 0).collect().length
-    println("dataLen: " + dataLen)
+  @tailrec
+  private def extendNeighbours(points: DataFrame): DataFrame = {
+    points.cache()
+    val dataLen = points.filter($"seed" > 0).count()
     if (dataLen == 0) {
-//    if (points.filter($"seed" > 0).rdd.isEmpty()) {          // TODO why always hang?
       points
     } else {
       val firstSeed = points.filter($"seed" > 0).limit(1).as[Node].first()
       val firstMarked = markNeighbours(points, firstSeed)
-      println("------------ firstMarked ----------------")
-      firstMarked.show()
-      println("------------ firstMarked over ----------------")
       extendNeighbours(firstMarked)
     }
   }
