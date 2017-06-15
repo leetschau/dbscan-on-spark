@@ -1,8 +1,5 @@
-package com.dhcc.dbscan
+package com.dhcc.avatar.aang.trans.steps.dbscan.lib
 
-/**
-  * Created by leo on 17-6-5.
-  */
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.sql.{DataFrame, SQLContext}
 import org.apache.spark.sql.functions.{lit, udf}
@@ -10,6 +7,15 @@ import org.apache.spark.sql.functions.{lit, udf}
 import scala.annotation.tailrec
 import scala.math.{pow, sqrt}
 
+/**
+  * Created by leo on 17-6-5.
+  * DBSCAN: Density based Spatial Clustering of Applications with Noise
+  * Input: DataFrame
+  * Output: DataFrame
+  * Parameters:
+  *   eps:
+  *   minPoints:
+  */
 case class Node(ID: Int, X: Double, Y: Double, classified: Int)
 
 class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) extends Serializable {
@@ -63,13 +69,13 @@ class DBScan(spc: SparkContext, coll: DataFrame, eps: Double, minPoints: Int) ex
 
   @tailrec
   private def extendNeighbours(points: DataFrame): DataFrame = {
-    points.cache()
     val dataLen = points.filter($"seed" > 0).count()
     if (dataLen == 0) {
       points
     } else {
       val firstSeed = points.filter($"seed" > 0).limit(1).as[Node].first()
       val firstMarked = markNeighbours(points, firstSeed)
+      firstMarked.cache()
       extendNeighbours(firstMarked)
     }
   }
